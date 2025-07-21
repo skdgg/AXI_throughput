@@ -199,7 +199,7 @@ module master_slave_tb;
 
     r_src_addr <= 10'h000;
     r_dst_addr <= 10'h000;
-    r_len      <= 10'd160; // 共 160 bytes = 10 個 burst，每筆 4-beat (ARLEN=3)
+    r_len      <= 10'd160; // 160 bytes = 10 burst， 4-beat (ARLEN=3)
 
     w_start    <= 1;
     @(posedge ACLK);
