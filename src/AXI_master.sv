@@ -12,38 +12,38 @@ module axi_master #(
   input  logic                     ACLK,
   input  logic                     ARESETn,
   //control
-  input  logic                     w_start,
+  input  logic                     w_start, //dma like master
   input  logic [ADDR_WIDTH-1:0]    r_src_addr,
   input  logic [ADDR_WIDTH-1:0]    r_dst_addr,
   input  logic [LGLEN-1:0]         r_len,	// Length of transfer read (byte)
   // AXI Write Address Channel
   output logic                     M_AXI_AWVALID,
   input  logic                     M_AXI_AWREADY,
-  output logic [ID_WIDTH-1:0]      M_AXI_AWID,
+  output logic [ID_WIDTH-1:0]      M_AXI_AWID,  //not used yet
   output logic [ADDR_WIDTH-1:0]    M_AXI_AWADDR,
-  output logic [7:0]               M_AXI_AWLEN,
-  output logic [2:0]               M_AXI_AWSIZE,
-  output logic [1:0]               M_AXI_AWBURST,
+  output logic [7:0]               M_AXI_AWLEN, //burst length - 1
+  output logic [2:0]               M_AXI_AWSIZE, //beat size
+  output logic [1:0]               M_AXI_AWBURST,  //INCR
 
   // AXI Write Data Channel
   output logic                     M_AXI_WVALID,
   input  logic                     M_AXI_WREADY,
   output logic [DATA_WIDTH-1:0]    M_AXI_WDATA,
-  output logic [DATA_WIDTH/8-1:0]  M_AXI_WSTRB,
+  output logic [DATA_WIDTH/8-1:0]  M_AXI_WSTRB, //1111
   output logic                     M_AXI_WLAST,
 
   // AXI Write Response Channel
   input  logic                     M_AXI_BVALID,
   output logic                     M_AXI_BREADY,
   input  logic [ID_WIDTH-1:0]      M_AXI_BID,
-  input  logic [1:0]               M_AXI_BRESP,
+  input  logic [1:0]               M_AXI_BRESP, //OKAY
 
   // AXI Read Address Channel
   output logic                     M_AXI_ARVALID,
   input  logic                     M_AXI_ARREADY,
   output logic [ID_WIDTH-1:0]      M_AXI_ARID,
   output logic [ADDR_WIDTH-1:0]    M_AXI_ARADDR,
-  output logic [7:0]               M_AXI_ARLEN,
+  output logic [7:0]               M_AXI_ARLEN, //burst length - 1
   output logic [2:0]               M_AXI_ARSIZE,
   output logic [1:0]               M_AXI_ARBURST,
 
@@ -55,44 +55,75 @@ module axi_master #(
   input  logic                     M_AXI_RLAST,
   input  logic [1:0]               M_AXI_RRESP
 );
-    localparam	[1:0]	AXI_INCR = 2'b01, AXI_OKAY = 2'b00;
+	// ========================
+	// AXI Protocol Constants
+	// ========================
+	localparam [1:0] AXI_INCR = 2'b01,   // AXI INCR burst type
+					AXI_OKAY = 2'b00;   // AXI OKAY response
 
-    logic r_busy, last_write_ack, r_done;
-	//read logic
-	logic                reads_remaining_nonzero;
-    logic	[ADDR_WIDTH-1:0]	read_address;
-	logic	[LGLEN:0]		readlen_b;
-	localparam	MAXBURST=(1<<LGMAXBURST);
-	logic	[LGLENW:0]		readlen_w, initial_readlen_w;
-	logic	[LGLENW:0]		reads_remaining_w,
-					read_beats_remaining_w,
-					read_bursts_outstanding;
-	logic				phantom_read, w_start_read,
-					no_read_bursts_outstanding;
+	localparam MAXBURST = (1 << LGMAXBURST); // max burst 
 
-    //FIFO logic
-	logic	    [LGFIFO:0]	fifo_space_available;
-	logic	[LGFIFO:0]	fifo_data_available, next_fifo_data_available;
-	logic fifo_reset;
-	logic fifo_full, fifo_empty, fifo_fill;
-	logic				r_write_fifo, r_read_fifo;
+	// ========================
+	// control Flag
+	// ========================
+	logic r_busy;             // master read or write
+	logic last_write_ack;     // last write response（BVALID）
+	logic r_done;             // all operations done flag 
 
+	// ========================
+	// AXI Read 
+	// ========================
+	logic                         reads_remaining_nonzero;      
+	logic [ADDR_WIDTH-1:0]        read_address;                 // next read AXI address
+	logic [LGLEN:0]               readlen_b;                    // total read length in bytes
 
+	logic [LGLENW:0]              readlen_w;                    // total read length in words
+	logic [LGLENW:0]              initial_readlen_w;            // initial value 
 
+	logic [LGLENW:0]              reads_remaining_w;            // remain read word 
+	logic [LGLENW:0]              read_beats_remaining_w;       // remain beats in a burst
+	logic [LGLENW:0]              read_bursts_outstanding;      // outstanding read bursts
 
-    //write logic
-	logic				phantom_write, w_write_start, AWVALID_start;
-	logic	[ADDR_WIDTH-1:0]	write_address;
-	logic	[LGLEN:0]		writelen_b;
-	logic	[LGLENW:0]		w_writes_remaining_w;
-	logic	[LGLENW:0]		writes_remaining_w,
-					write_bursts_outstanding;
-	logic				write_requests_remaining;
-	logic 	[LGLENW:0]		write_burst_length;
-	logic	[8:0]		write_count;
+	logic                         phantom_read;                 // read init
+	logic                         w_start_read;                 // read burst trigger signal
+	logic                         no_read_bursts_outstanding;   // all read bursts completed 
 
+	// ========================
+	// FIFO 
+	// ========================
+	logic        [LGFIFO:0]       fifo_space_available;         // FIFO remaining space (writable)
+	logic        [LGFIFO:0]       fifo_data_available;         // FIFO available data count
+	logic        [LGFIFO:0]       next_fifo_data_available;    // predicted FIFO next cycle data count
 
+	logic                         fifo_reset;                   // reset FIFO flag
+	logic                         fifo_full;                    // FIFO full
+	logic                         fifo_empty;                   // FIFO empty
+	logic                         fifo_fill;                    // FIFO current fill level
+	logic                         r_write_fifo;                 // FIFO write enable
+	logic                         r_read_fifo;                  // FIFO read enable
 
+	// ========================
+	// AXI Write 
+	// ========================
+	logic                         phantom_write;                // write address fire
+	logic                         w_write_start;                // write burst trigger signal
+	logic                         AWVALID_start;                // for high throughput, AWVALID start signal
+
+	logic [ADDR_WIDTH-1:0]        write_address;                // next write AXI addr
+	logic [LGLEN:0]               writelen_b;                   // total write length in bytes
+
+	logic [LGLENW:0]              w_writes_remaining_w;         // current write remaining word count
+	logic [LGLENW:0]              writes_remaining_w;           
+
+	logic [LGLENW:0]              write_bursts_outstanding;     // outstanding write bursts
+	logic                         write_requests_remaining;     
+
+	logic [LGLENW:0]              write_burst_length;           
+	logic [8:0]                   write_count;                  
+
+	////////////////////////////////////////////////////////////////////////
+	// control master
+	////////////////////////////////////////////////////////////////////////
 	always_ff @(posedge ACLK or negedge ARESETn) begin
 	if (!ARESETn) begin
 		r_busy <= 1'b0;
@@ -107,12 +138,8 @@ module axi_master #(
 	end
 
 	////////////////////////////////////////////////////////////////////////
-	//
 	// AXI read processing
-	// {{{
 	////////////////////////////////////////////////////////////////////////
-	//
-	//
 
 	//
 	// Read data into our FIFO
@@ -130,7 +157,6 @@ module axi_master #(
 	end
 	end
 
-
 	// Track how many beats are still remaining to be issued as bursts
 	always_ff @(posedge ACLK or negedge ARESETn) begin
 	if (!ARESETn) begin
@@ -145,9 +171,7 @@ module axi_master #(
 	end
 	end
 
-
 	// read_bursts_outstanding, no_read_bursts_outstanding
-
 	always_ff @(posedge ACLK or negedge ARESETn) begin
 	if (!ARESETn) begin
 		read_bursts_outstanding <= '0;
@@ -161,7 +185,6 @@ module axi_master #(
 		endcase
 	end
 	end
-
 
 	always_ff @(posedge ACLK or negedge ARESETn) begin
 	if (!ARESETn || !r_busy) begin
@@ -188,7 +211,7 @@ module axi_master #(
 
 	// readlen_b
 	always_comb begin
-		readlen_b = {1'b0, r_len};              
+		readlen_b = {1'b0, r_len};              //init length
 		readlen_b[ADDRLSB-1:0] = '0;            // to word-align
 	end
 
@@ -232,7 +255,7 @@ module axi_master #(
 	end
 
 
-
+	// M_AXI_ARVALID stay high to allow continuous read bursts!!
 	// Read Address Channel Valid and Phantom Flag
 	always_ff @(posedge ACLK or negedge ARESETn) begin
 	if (!ARESETn || !r_busy) begin
@@ -260,8 +283,8 @@ module axi_master #(
 	assign	M_AXI_ARID    = 0;
 	assign	M_AXI_ARBURST = AXI_INCR;
 	assign	M_AXI_ARSIZE  = ADDRLSB[2:0];
-	assign	M_AXI_ARLOCK  = 1'b0;
-	assign	M_AXI_ARCACHE = 4'b0011;
+	//assign	M_AXI_ARLOCK  = 1'b0;
+	//assign	M_AXI_ARCACHE = 4'b0011;
 	//assign	M_AXI_ARPROT  = r_prot;
 	//assign	M_AXI_ARQOS   = r_qos;
 		//
@@ -269,12 +292,9 @@ module axi_master #(
 	// }}}
 
 	////////////////////////////////////////////////////////////////////////
-	//
-	// The intermediate FIFO
-	// {{{
+	// FIFO
 	////////////////////////////////////////////////////////////////////////
-	//
-	//
+
 	always_comb begin
 	fifo_reset = (!ARESETn || !r_busy || r_done);
 	end
@@ -329,44 +349,41 @@ module axi_master #(
 	end
 
 
-	// 每次 phantom_read：代表我們即將送出一筆 AR burst，需要保留空間
-	// 每次寫入 W channel 成功（WVALID && WREADY）：代表 FIFO 實際消耗一筆資料
+	//  phantom_read：fire AR burst need space in FIFO
+	// write W channel（WVALID && WREADY）： FIFO -1
 
 	always_ff @(posedge ACLK or negedge ARESETn) begin
 	if (!ARESETn || fifo_reset) begin
-		fifo_space_available <= (1 << LGFIFO);  // 初始化為 FIFO 滿空間
+		fifo_space_available <= (1 << LGFIFO);  
 	end else begin
 		case ({phantom_read, M_AXI_WVALID && M_AXI_WREADY})
 		2'b10: begin
-			// 發出 read burst，但還沒寫進 FIFO：預先扣掉 ARLEN+1 筆
+			// read burst
 			fifo_space_available <= fifo_space_available - (M_AXI_ARLEN + 1);
 		end
 		2'b01: begin
-			// 成功從 FIFO 寫出一筆到 W channel：空間釋放
+			// FIFO fire W channel
 			fifo_space_available <= fifo_space_available + 1;
 		end
 		2'b11: begin
-			// 同 cycle 發出一筆 burst 又寫出一筆資料，差額扣 ARLEN
+			// phantom_read and W channel fire
 			fifo_space_available <= fifo_space_available - M_AXI_ARLEN;
 		end
 		default: begin
-			// 沒有變動
 			fifo_space_available <= fifo_space_available;
 		end
 		endcase
 	end
 	end
 	////////////////////////////////////////////////////////////////////////
-	//
 	// AXI write processing
-	// {{{
 	////////////////////////////////////////////////////////////////////////
 	//
 
 	// Write data from the FIFO to the AXI bus
 	//
 
-	// AXI Write Address Generator
+	// AXI Write Address 
 	always_ff @(posedge ACLK or negedge ARESETn) begin
 	if (!ARESETn) begin
 		write_address <= '0;
@@ -512,7 +529,7 @@ module axi_master #(
 	end
 
 
-	// AWVALID_start
+	// AWVALID_start for continuous write bursts!!
 	always_comb begin
 	AWVALID_start = 1'b1;
 
@@ -575,7 +592,7 @@ module axi_master #(
 	if (!ARESETn || !r_busy)
 		M_AXI_AWLEN <= 8'd0;
 	else if (!M_AXI_AWVALID || M_AXI_AWREADY) begin
-		M_AXI_AWLEN <= (w_write_start) ? write_burst_length[7:0] - 8'd1 : 8'd0;
+		M_AXI_AWLEN <= write_burst_length[7:0] - 8'd1;
 	end
 	end
 

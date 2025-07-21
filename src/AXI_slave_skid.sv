@@ -4,7 +4,7 @@ module axi_slave_skid #(
     parameter ADDR_WIDTH = 10,
     parameter DATA_WIDTH = 32,
     parameter STRB_WIDTH = DATA_WIDTH / 8,
-    parameter ID_WIDTH   = 2,
+    parameter ID_WIDTH   = 1,
     localparam LSB = $clog2(DATA_WIDTH)-3
 )(
 	//mem
@@ -69,43 +69,78 @@ module axi_slave_skid #(
 );
 
 
-	//skid buffer
-	logic [ADDR_WIDTH-1:0] awaddr_buf;
-	logic [7:0]  awlen_buf;
-	logic [ID_WIDTH-1:0]   awid_buf;
-	logic                  awvalid_buf, awready_buf, awlock_buf;
-	logic      [2:0]       awsize_buf;
-	logic      [1:0]       awburst_buf;
+	// ============================
+	// Write Address (AW) Skid Buffer
+	// ============================
+	// Buffered AW signals from skid buffer
+	logic [ADDR_WIDTH-1:0]   awaddr_buf;     // Buffered AWADDR
+	logic [7:0]              awlen_buf;      // Buffered AWLEN (number of beats - 1)
+	logic [ID_WIDTH-1:0]     awid_buf;       // Buffered AWID (write transaction ID)
+	logic                    awvalid_buf;    // AWVALID output from skid buffer
+	logic                    awready_buf;    // Handshake signal to skid buffer
+	logic                    awlock_buf;     // Buffered AWLOCK
+	logic [2:0]              awsize_buf;     // Buffered AWSIZE (beat size)
+	logic [1:0]              awburst_buf;    // Buffered AWBURST (burst type)
 
-	// Double buffer the write response channel only
-	logic	[ID_WIDTH-1 : 0]	r_bid;
-	logic			r_bvalid;
-	logic	[ID_WIDTH-1 : 0]	axi_bid;
-	logic			axi_bvalid;
+
+	// ============================
+	// Write Response (B) Buffer
+	// ============================
+	// Double buffer for write response channel
+	logic [ID_WIDTH-1:0]     r_bid;          // Buffered BID, used when BVALID is not accepted immediately
+	logic                    r_bvalid;       // Indicates write response is waiting to be accepted
+
+	logic [ID_WIDTH-1:0]     axi_bid;        // Actual BID driven to output
+	logic                    axi_bvalid;     // Actual BVALID driven to output
+
 	logic			axi_awready, axi_wready;
 	
-	logic	[ADDR_WIDTH-1:0]	waddr;
-	logic	[ADDR_WIDTH-1:0]	next_wr_addr;
-	logic	[7:0]		wlen;
-	logic	[2:0]		wsize;
-	logic	[1:0]		wburst;
-	logic	[ADDR_WIDTH-1:0]	next_rd_addr;
+	// ============================
+	// Write Address Calculation
+	// ============================
+	// Current and next write address
+	logic [ADDR_WIDTH-1:0]   waddr;          // Current write address
+	logic [ADDR_WIDTH-1:0]   next_wr_addr;   // Next write address calculated by axi_addr
+
+	// Write burst control signals
+	logic [7:0]              wlen;           // Number of beats in this burst (AWLEN)
+	logic [2:0]              wsize;          // Size of each beat (AWSIZE)
+	logic [1:0]              wburst;         // Burst type (AWBURST)
+
+	// ============================
+	// Read Address Control
+	// ============================
+	// Next read address to fetch from memory
+	logic [ADDR_WIDTH-1:0]   next_rd_addr;   // Calculated next read address
 
 
-	logic	[7:0]		rlen;
-	logic	[2:0]		rsize;
-	logic	[1:0]		rburst;
-	logic	[ID_WIDTH-1:0]	rid;
-	logic			rlock;
-	logic			axi_arready;
-    logic	[8:0]		axi_rlen;
-	logic	[ADDR_WIDTH-1:0]	raddr;
+	// ============================
+	// Read Request Metadata
+	// ============================
+	logic [7:0]              rlen;           // Number of beats (ARLEN)
+	logic [2:0]              rsize;          // Size of each beat (ARSIZE)
+	logic [1:0]              rburst;         // Burst type (ARBURST)
+	logic [ID_WIDTH-1:0]     rid;            // Read transaction ID
+	logic                   rlock;           // Lock flag (ARLOCK) – not really used
 
-	// Read skid buffer
-	logic			rskd_valid, rskd_last, rskd_lock;
-	logic			rskd_ready;
-	logic	[ID_WIDTH-1:0]	rskd_id;
-	
+	// ============================
+	// Read State Tracking
+	// ============================
+	logic                   axi_arready;     // Slave ready to accept AR address
+	logic [8:0]             axi_rlen;        // Remaining beats in read burst (max 256 beats)
+	logic [ADDR_WIDTH-1:0]  raddr;           // Current read address
+
+
+	// ============================
+	// Read Skid Buffer Signals
+	// ============================
+	logic                   rskd_valid;      // Skid buffer has valid read data
+	logic                   rskd_last;       // This beat is the last of the burst (RLAST)
+	logic                   rskd_lock;       // Lock – not really used
+	logic                   rskd_ready;      // Skid buffer ready to output
+	logic [ID_WIDTH-1:0]    rskd_id;         // Transaction ID for current read beat
+
+		
 
 
 	// AW Skid buffer
@@ -149,7 +184,6 @@ module axi_slave_skid #(
 	end
 
 	// Next write address calculation
-	// {{{
 	always_ff @(posedge ACLK)
 	if (awready_buf)
 	begin
@@ -161,19 +195,13 @@ module axi_slave_skid #(
 		waddr <= next_wr_addr;
 
 	axi_addr #(
-		// {{{
 		.AW(ADDR_WIDTH), .DW(DATA_WIDTH)
-		// }}}
 	) get_next_wr_addr(
-		// {{{
 		waddr, wsize, wburst, wlen,
 			next_wr_addr
-		// }}}
 	);
-	// }}}
 
 	// o_w*
-	// {{{
 	always_ff @(posedge ACLK) begin
 		if (!ARESETn) begin
 			o_we    <= 0;
@@ -201,7 +229,6 @@ module axi_slave_skid #(
 
 
 	// r_bid, axi_bid
-	// {{{
 	always_ff@(posedge ACLK)
 	if (!ARESETn)
 	begin
@@ -214,7 +241,6 @@ module axi_slave_skid #(
 	end
   
 	// axi_bvalid
-
 	always_ff@(posedge ACLK)
 	if (!ARESETn)
 		axi_bvalid <= 0;
@@ -224,7 +250,7 @@ module axi_slave_skid #(
 		axi_bvalid <= r_bvalid;
 
 
-	// m_awready
+	// awready
 	always_comb
 	begin
 		awready_buf = axi_awready;
@@ -236,18 +262,13 @@ module axi_slave_skid #(
 	assign	S_WREADY  = axi_wready;
 	assign	S_BVALID  = axi_bvalid;
 	assign	S_BID     = axi_bid;
-	//
-	// This core does not produce any bus errors, nor does it support
-	// exclusive access, so 2'b00 will always be the correct response.
-	assign	S_BRESP = 2'b00;
-	// }}}
+	assign	S_BRESP = 2'b00;//OKAY
 
 	////////////////////////////////////////////////////////////////////////
 	// Read 
 	////////////////////////////////////////////////////////////////////////
 
 	// axi_arready
-	// {{{
 	always_ff @(posedge ACLK)
 	if (!ARESETn)
 			axi_arready <= 1;
@@ -290,17 +311,13 @@ module axi_slave_skid #(
 	end
 
 	axi_addr #(
-		// {{{
 		.AW(ADDR_WIDTH), .DW(DATA_WIDTH)
-		// }}}
 	) get_next_rd_addr(
-		// {{{
 		(S_ARREADY ? S_ARADDR : raddr),
 		(S_ARREADY  ? S_ARSIZE : rsize),
 		(S_ARREADY  ? S_ARBURST: rburst),
 		(S_ARREADY  ? S_ARLEN  : rlen),
 		next_rd_addr
-		// }}}
 	);
 
 
@@ -311,7 +328,7 @@ module axi_slave_skid #(
 			o_rd = 0;
 		if (rskd_valid && !rskd_ready)
 			o_rd = 0;
-	  o_raddr = (S_ARREADY ? S_ARADDR[ADDR_WIDTH-1:LSB] : raddr[ADDR_WIDTH-1:LSB]);
+	    o_raddr = (S_ARREADY ? S_ARADDR[ADDR_WIDTH-1:LSB] : raddr[ADDR_WIDTH-1:LSB]);
     end
 
 	// rskd_valid
@@ -324,7 +341,6 @@ module axi_slave_skid #(
 		rskd_valid <= 0;
 
 	// rskd_id
-	// {{{
 	always_ff @(posedge ACLK)
     if (!ARESETn)
 		rskd_id <= 0;
@@ -335,7 +351,6 @@ module axi_slave_skid #(
 		else
 			rskd_id <= rid;
 	end
-	// }}}
 
 	// rskd_last
 
